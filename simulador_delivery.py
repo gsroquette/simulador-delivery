@@ -53,7 +53,7 @@ DEFAULTS = {
     "dias_uteis": 18,
     "dias_fds": 12,
     "entregas_por_hora": 2.5,
-    "horas_semana": 8.0,
+    "horas_semana": 6.0,
     "horas_fds": 10.0,
     "mb_diaria": 60.0,                # diária paga a cada motoboy
     "mb_custo_por_entrega": 5.0,      # adicional por entrega (todos os motoboys)
