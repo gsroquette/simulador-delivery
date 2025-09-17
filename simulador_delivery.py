@@ -1,5 +1,5 @@
 # simulador_delivery.py
-import json, io
+import json, io, math
 import streamlit as st
 import pandas as pd
 
@@ -8,7 +8,7 @@ st.set_page_config(page_title="Simulador Financeiro — Delivery", page_icon="�
 # -----------------------------
 # Utilidades
 # -----------------------------
-def money(x): 
+def money(x):
     return f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def load_config(defaults: dict):
@@ -24,40 +24,40 @@ def save_button(config_dict):
 # Valores padrão
 # -----------------------------
 DEFAULTS = {
+    # Entradas principais
     "ticket_medio": 70.0,
     "faturamento": 50000.0,
 
-    # FIXOS base (sem cozinheiros)
+    # FIXOS base (sem motoboys)
     "fixo_aluguel": 2000.0,
     "fixo_gerente": 3000.0,
     "fixo_joao": 1000.0,
     "fixo_util_basico": 1000.0,
     "fixo_depreciacao": 200.0,
-    "fixo_motoboys_fixos_qtd": 2,
-    "fixo_motoboy_salario": 1800.0,
     "fixo_anotai": 279.79,
 
     # COZINHEIROS (por faixa de faturamento)
-    "cook_t1_limite": 50000.0,  "cook_t1_sal": 5000.0,   # até aqui → 2 cozinheiros
-    "cook_t2_limite": 150000.0, "cook_t2_sal": 7500.0,   # até aqui → 3 cozinheiros
-    "cook_t3_sal": 10000.0,                                # acima → 4 cozinheiros
+    "cook_t1_limite": 50000.0,   "cook_t1_sal": 5000.0,   # 2 cozinheiros
+    "cook_t2_limite": 150000.0,  "cook_t2_sal": 7500.0,   # 3 cozinheiros
+    "cook_t3_sal": 10000.0,                                 # 4 cozinheiros
 
-    # VARIÁVEIS (em fração; exibiremos como %)
+    # VARIÁVEIS (em fração; exibimos como % na UI)
     "pct_insumos": 0.333,
     "pct_embalagens": 0.02,
     "pct_energia_extra": 0.015,
     "pct_ifood": 0.11,
     "pct_marketing": 0.02,
 
-    # MOTOBOYS EXTRAS (finais de semana)
-    "mb_threshold1": 45000.0,   # ≤ → 0 extras
-    "mb_threshold2": 150000.0,  # ≤ → 2 extras
-    "mb_extras_t2": 2,
-    "mb_extras_t3": 3,
-    "mb_diaria": 60.0,
-    "mb_fds_dias_mes": 12,
-    "mb_por_entrega": 5.0,
-    "mb_entregas_por_extra_dia": 15,
+    # MOTOBOYS — novo modelo 100% variável por demanda
+    "perc_fds": 0.45,                 # % dos pedidos que caem em sext/sáb/dom
+    "dias_uteis": 18,
+    "dias_fds": 12,
+    "entregas_por_hora": 2.5,
+    "horas_semana": 8.0,
+    "horas_fds": 10.0,
+    "mb_diaria": 60.0,                # diária paga a cada motoboy
+    "mb_custo_por_entrega": 5.0,      # adicional por entrega (todos os motoboys)
+    "motoboys_minimos": 2,            # mínimo operacional sempre 2
 
     "mostrar_graficos": True
 }
@@ -72,7 +72,8 @@ with st.sidebar:
 
     cfg = load_config(DEFAULTS)
 
-    up = st.file_uploader("Carregar configuração (JSON)", type=["json"], help="Suba aqui um arquivo gerado pelo botão de download para restaurar todos os parâmetros.")
+    up = st.file_uploader("Carregar configuração (JSON)", type=["json"],
+                          help="Suba um arquivo salvo pelo botão de download para restaurar todos os parâmetros.")
     if up:
         cfg = json.load(up)
         st.session_state.config = cfg
@@ -102,13 +103,9 @@ with st.sidebar:
                                                   help="Quota mensal de depreciação dos equipamentos.")
     with colf2:
         cfg["fixo_util_basico"] = st.number_input("Luz/Água/IPTU/Tel/Internet (base)", 0.0, value=float(cfg["fixo_util_basico"]), step=100.0,
-                                                  help="Conta base, independente do volume de produção (o excedente vai em 'Energia extra (%)').")
+                                                  help="Conta base, independente do volume de produção. O excedente vai em 'Energia extra (%)'.")
         cfg["fixo_anotai"] = st.number_input("Anota.i (fixo)", 0.0, value=float(cfg["fixo_anotai"]), step=10.0,
                                              help="Assinatura mensal do sistema Anota.i.")
-        cfg["fixo_motoboys_fixos_qtd"] = st.number_input("Motoboys fixos (qtd)", 0, value=int(cfg["fixo_motoboys_fixos_qtd"]), step=1,
-                                                         help="Quantidade de motoboys fixos na folha.")
-        cfg["fixo_motoboy_salario"] = st.number_input("Salário por motoboy fixo (R$)", 0.0, value=float(cfg["fixo_motoboy_salario"]), step=50.0,
-                                                      help="Custo mensal por motoboy fixo.")
 
     st.divider()
     st.caption("Cozinheiros (escala por faturamento)")
@@ -129,27 +126,27 @@ with st.sidebar:
 
     # -------- Percentuais em %
     st.divider()
-    st.caption("Percentuais variáveis (%)")
+    st.caption("Percentuais variáveis (%) — aplicados sobre o faturamento")
     colp1, colp2, colp3, colp4, colp5 = st.columns(5)
 
     cfg["pct_insumos"] = st.number_input(
         "Insumos (%)", 0.0, 100.0, value=float(cfg["pct_insumos"] * 100), step=0.5,
-        help="Percentual do faturamento gasto em insumos (ex.: carnes, óleo, ingredientes)."
+        help="Ingredientes/alimentos. Relação 1:3 ≈ 33,3%."
     ) / 100
 
     cfg["pct_embalagens"] = st.number_input(
         "Embalagens (%)", 0.0, 100.0, value=float(cfg["pct_embalagens"] * 100), step=0.5,
-        help="Percentual do faturamento gasto em embalagens descartáveis."
+        help="Gasto com embalagens descartáveis."
     ) / 100
 
     cfg["pct_energia_extra"] = st.number_input(
         "Energia extra (%)", 0.0, 100.0, value=float(cfg["pct_energia_extra"] * 100), step=0.1,
-        help="Parcela variável da energia elétrica (uso de fritadeiras/freezers conforme produção)."
+        help="Parcela variável da energia (fritadeiras/freezers conforme produção)."
     ) / 100
 
     cfg["pct_ifood"] = st.number_input(
         "iFood/cartão (%)", 0.0, 100.0, value=float(cfg["pct_ifood"] * 100), step=0.5,
-        help="Taxas de plataforma e cartões (média ponderada)."
+        help="Taxas de plataforma e cartões (média)."
     ) / 100
 
     cfg["pct_marketing"] = st.number_input(
@@ -157,38 +154,40 @@ with st.sidebar:
         help="Investimento em marketing (Google Ads, redes sociais, cupons)."
     ) / 100
 
-    # -------- Motoboys extras
+    # -------- Motoboys — 100% variáveis por demanda
     st.divider()
-    st.caption("Motoboys extras (fim de semana)")
-    colm1, colm2, colm3 = st.columns(3)
-    with colm1:
-        cfg["mb_threshold1"] = st.number_input("Limite T1 (0 extras)", 0.0, value=float(cfg["mb_threshold1"]), step=1000.0,
-                                               help="Até este faturamento: usa só os motoboys fixos (sem extras).")
-        cfg["mb_threshold2"] = st.number_input("Limite T2 (2 extras)", 0.0, value=float(cfg["mb_threshold2"]), step=1000.0,
-                                               help="Até este faturamento: acrescenta 2 extras no fim de semana.")
-    with colm2:
-        cfg["mb_extras_t2"] = st.number_input("Extras no T2 (qtd)", 0, value=int(cfg["mb_extras_t2"]), step=1,
-                                              help="Quantidade de motoboys extras (semanas) na faixa T2.")
-        cfg["mb_extras_t3"] = st.number_input("Extras no T3 (qtd)", 0, value=int(cfg["mb_extras_t3"]), step=1,
-                                              help="Quantidade de motoboys extras (semanas) na faixa T3.")
-    with colm3:
-        cfg["mb_diaria"] = st.number_input("Diária por extra (R$)", 0.0, value=float(cfg["mb_diaria"]), step=5.0,
-                                           help="Valor pago por diária ao motoboy extra.")
-        cfg["mb_fds_dias_mes"] = st.number_input("Dias de FDS no mês", 0, value=int(cfg["mb_fds_dias_mes"]), step=1,
-                                                 help="Quantidade de dias de sexta/sábado/domingo no mês (média).")
+    st.caption("Motoboys — modelo por demanda (100% variável)")
+    colD1, colD2, colD3 = st.columns(3)
+    with colD1:
+        cfg["perc_fds"] = st.number_input("% dos pedidos no FDS", 0.0, 100.0, value=float(cfg["perc_fds"] * 100), step=1.0,
+                                          help="Percentual de pedidos que cai em sext/sáb/dom.") / 100
+        cfg["dias_uteis"] = st.number_input("Dias úteis no mês", 0, value=int(cfg["dias_uteis"]), step=1,
+                                            help="Quantidade de dias úteis de operação no mês.")
+    with colD2:
+        cfg["dias_fds"] = st.number_input("Dias de FDS no mês", 0, value=int(cfg["dias_fds"]), step=1,
+                                          help="Quantidade de sextas/sábados/domingos no mês.")
+        cfg["entregas_por_hora"] = st.number_input("Entregas por hora / motoboy", 0.0, value=float(cfg["entregas_por_hora"]), step=0.1,
+                                                   help="Produtividade média por hora de um motoboy.")
+    with colD3:
+        cfg["horas_semana"] = st.number_input("Horas por dia (semana)", 0.0, value=float(cfg["horas_semana"]), step=0.5,
+                                              help="Jornada média por dia útil.")
+        cfg["horas_fds"] = st.number_input("Horas por dia (FDS)", 0.0, value=float(cfg["horas_fds"]), step=0.5,
+                                           help="Jornada média por dia de sext/sáb/dom.")
 
-    colm4, colm5 = st.columns(2)
-    with colm4:
-        cfg["mb_por_entrega"] = st.number_input("Custo por entrega (R$)", 0.0, value=float(cfg["mb_por_entrega"]), step=1.0,
-                                                help="Adicional pago ao motoboy extra por entrega realizada.")
-    with colm5:
-        cfg["mb_entregas_por_extra_dia"] = st.number_input("Entregas/extra/dia de FDS", 0, value=int(cfg["mb_entregas_por_extra_dia"]), step=1,
-                                                            help="Quantas entregas cada extra faz por dia de fim de semana.")
+    colD4, colD5, colD6 = st.columns(3)
+    with colD4:
+        cfg["mb_diaria"] = st.number_input("Diária por motoboy (R$)", 0.0, value=float(cfg["mb_diaria"]), step=5.0,
+                                           help="Valor pago por diária a cada motoboy.")
+    with colD5:
+        cfg["mb_custo_por_entrega"] = st.number_input("Custo por entrega (R$)", 0.0, value=float(cfg["mb_custo_por_entrega"]), step=0.5,
+                                                      help="Adicional por entrega realizada.")
+    with colD6:
+        cfg["motoboys_minimos"] = st.number_input("Motoboys mínimos", 0, value=int(cfg["motoboys_minimos"]), step=1,
+                                                  help="Mínimo operacional (sempre cobertos via diárias).")
 
     st.divider()
     cfg["mostrar_graficos"] = st.checkbox("Mostrar gráficos", value=bool(cfg["mostrar_graficos"]),
                                           help="Exibe gráficos de custos e métricas.")
-
     st.button("🔄 Resetar para padrão", on_click=lambda: st.session_state.update({"config": DEFAULTS.copy()}))
     save_button(cfg)
 
@@ -197,16 +196,15 @@ with st.sidebar:
 # -----------------------------
 fat = cfg["faturamento"]
 ticket = cfg["ticket_medio"]
-pedidos = fat / ticket if ticket else 0
+pedidos_mes = fat / ticket if ticket else 0
 
-# Fixos base
+# Fixos
 fixo_base = (
     cfg["fixo_aluguel"] + cfg["fixo_gerente"] + cfg["fixo_joao"] +
-    cfg["fixo_util_basico"] + cfg["fixo_depreciacao"] + cfg["fixo_anotai"] +
-    cfg["fixo_motoboys_fixos_qtd"] * cfg["fixo_motoboy_salario"]
+    cfg["fixo_util_basico"] + cfg["fixo_depreciacao"] + cfg["fixo_anotai"]
 )
 
-# Cozinheiros
+# Cozinheiros por faixa
 if fat <= cfg["cook_t1_limite"]:
     cozinheiros = cfg["cook_t1_sal"]
 elif fat <= cfg["cook_t2_limite"]:
@@ -223,20 +221,37 @@ energia_extra = fat * cfg["pct_energia_extra"]
 ifood = fat * cfg["pct_ifood"]
 marketing = fat * cfg["pct_marketing"]
 
-# Motoboys extras
-if fat <= cfg["mb_threshold1"]:
-    extras = 0
-elif fat <= cfg["mb_threshold2"]:
-    extras = cfg["mb_extras_t2"]
-else:
-    extras = cfg["mb_extras_t3"]
+# -------- Motoboys (100% variáveis por demanda)
+perc_fds = cfg["perc_fds"]
+dias_uteis = cfg["dias_uteis"]
+dias_fds = cfg["dias_fds"]
+entregas_por_hora = cfg["entregas_por_hora"]
+horas_semana = cfg["horas_semana"]
+horas_fds = cfg["horas_fds"]
+motoboys_min = cfg["motoboys_minimos"]
 
-mb_fixos_extras = extras * cfg["mb_diaria"] * cfg["mb_fds_dias_mes"]
-mb_entregas_mes = extras * cfg["mb_entregas_por_extra_dia"] * cfg["mb_fds_dias_mes"]
-mb_var_extras = mb_entregas_mes * cfg["mb_por_entrega"]
-mb_total_extras = mb_fixos_extras + mb_var_extras
+# Quebra de pedidos
+pedidos_fds = pedidos_mes * perc_fds
+pedidos_sem = pedidos_mes * (1 - perc_fds)
 
-variaveis_total = insumos + embalagens + energia_extra + ifood + marketing + mb_total_extras
+pedidos_dia_sem = (pedidos_sem / dias_uteis) if dias_uteis else 0
+pedidos_dia_fds = (pedidos_fds / dias_fds) if dias_fds else 0
+
+# Capacidade por motoboy/dia
+cap_sem = entregas_por_hora * horas_semana
+cap_fds = entregas_por_hora * horas_fds
+
+motoboys_sem = max(motoboys_min, math.ceil(pedidos_dia_sem / cap_sem)) if cap_sem > 0 else motoboys_min
+motoboys_fds = max(motoboys_min, math.ceil(pedidos_dia_fds / cap_fds)) if cap_fds > 0 else motoboys_min
+
+# Custo dos motoboys: diárias + por entrega (todos)
+diarias_sem = motoboys_sem * cfg["mb_diaria"] * dias_uteis
+diarias_fds = motoboys_fds * cfg["mb_diaria"] * dias_fds
+custo_por_entregas = pedidos_mes * cfg["mb_custo_por_entrega"]
+
+custo_motoboys_total = diarias_sem + diarias_fds + custo_por_entregas
+
+variaveis_total = insumos + embalagens + energia_extra + ifood + marketing + custo_motoboys_total
 total_custos = fixos_total + variaveis_total
 lucro = fat - total_custos
 margem = (lucro / fat * 100) if fat > 0 else 0
@@ -245,30 +260,40 @@ margem = (lucro / fat * 100) if fat > 0 else 0
 # Saída
 # -----------------------------
 st.subheader("Resultado da Simulação")
+
 tabela = pd.DataFrame({
     "Valores": [
-        fat, round(pedidos),
+        fat, round(pedidos_mes),
         fixos_total, insumos, embalagens, energia_extra, ifood, marketing,
-        mb_total_extras, total_custos, lucro, margem
+        custo_motoboys_total, total_custos, lucro, margem
     ]},
     index=[
         "Faturamento", "Pedidos (estim.)",
         "Fixos (total)", "Insumos", "Embalagens", "Energia extra", "iFood/cartão", "Marketing",
-        "Motoboys extra (total)", "Custos totais", "Lucro líquido", "Margem líquida (%)"
+        "Motoboys (total variável)", "Custos totais", "Lucro líquido", "Margem líquida (%)"
     ]
 )
+
 st.dataframe(
-    tabela.style.format(lambda v: money(v) if isinstance(v, (int, float)) and "Margem" not in str(v) else (f"{v:.1f}%" if isinstance(v, (int, float)) else v)),
+    tabela.style.format(lambda v: money(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v),
     use_container_width=True
 )
+
+# Métricas adicionais de operação dos motoboys
+st.caption("Dimensionamento de motoboys (estimado)")
+colx1, colx2, colx3, colx4 = st.columns(4)
+colx1.metric("Pedidos/dia útil", f"{pedidos_dia_sem:.1f}")
+colx2.metric("Pedidos/dia FDS", f"{pedidos_dia_fds:.1f}")
+colx3.metric("Motoboys na semana", f"{motoboys_sem}")
+colx4.metric("Motoboys no FDS", f"{motoboys_fds}")
 
 if cfg["mostrar_graficos"]:
     c1, c2 = st.columns(2)
     with c1:
         st.caption("Custos (quebra)")
         chart_df = pd.DataFrame({
-            "Categoria": ["Fixos", "Insumos", "Embalagens", "Energia extra", "iFood/cartão", "Marketing", "Motoboys extra"],
-            "Valor": [fixos_total, insumos, embalagens, energia_extra, ifood, marketing, mb_total_extras]
+            "Categoria": ["Fixos", "Insumos", "Embalagens", "Energia extra", "iFood/cartão", "Marketing", "Motoboys"],
+            "Valor": [fixos_total, insumos, embalagens, energia_extra, ifood, marketing, custo_motoboys_total]
         }).set_index("Categoria")
         st.bar_chart(chart_df)
     with c2:
