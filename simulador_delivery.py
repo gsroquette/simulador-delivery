@@ -49,15 +49,15 @@ DEFAULTS = {
     "pct_marketing": 0.02,
 
     # MOTOBOYS — novo modelo 100% variável por demanda
-    "perc_fds": 0.45,                 # % dos pedidos que caem em sext/sáb/dom
+    "perc_fds": 0.62,                 # % dos pedidos que caem em sext/sáb/dom
     "dias_uteis": 18,
     "dias_fds": 12,
     "entregas_por_hora": 2.5,
     "horas_semana": 6.0,
-    "horas_fds": 10.0,
+    "horas_fds": 6.5,
     "mb_diaria": 60.0,                # diária paga a cada motoboy
     "mb_custo_por_entrega": 5.0,      # adicional por entrega (todos os motoboys)
-    "motoboys_minimos": 2,            # mínimo operacional sempre 2
+    "motoboys_minimos": 1,            # mínimo operacional sempre 2
 
     "mostrar_graficos": True
 }
