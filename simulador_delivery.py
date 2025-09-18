@@ -42,12 +42,12 @@ DEFAULTS = {
     "fixo_util_basico": 1000.0,
     "fixo_depreciacao": 200.0,
     "fixo_anotai": 279.79,
-    "fixo_contador": 0.0,   # <— novo campo Contador
+    "fixo_contador": 0.0,   # novo: Contador
 
     # COZINHEIROS (por faixa de faturamento)
     "cook_t1_limite": 50000.0,   "cook_t1_sal": 5000.0,   # 2 cozinheiros
     "cook_t2_limite": 150000.0,  "cook_t2_sal": 7500.0,   # 3 cozinheiros
-    "cook_t3_sal": 10000.0,                                  # 4 cozinheiros
+    "cook_t3_sal": 10000.0,                              # 4 cozinheiros
 
     # VARIÁVEIS (fração; exibimos como % na UI)
     "pct_insumos": 0.333,
@@ -57,7 +57,7 @@ DEFAULTS = {
     "pct_marketing": 0.02,
 
     # MOTOBOYS — 100% variável por demanda
-    "perc_fds": 0.59,              # <— padrão ≈ 59%
+    "perc_fds": 0.59,              # padrão ≈ 59%
     "dias_uteis": 18,
     "dias_fds": 12,
     "entregas_por_hora": 2.5,
@@ -92,23 +92,24 @@ with st.sidebar:
 
     st.divider()
     st.caption("Entradas principais")
-    cfg["faturamento"] = st.number_input(
-    "Faturamento (R$)",
-    min_value=0.0,
-    value=float(cfg["faturamento"]),
-    step=1000.0,
-    format="%.0f",  # força inteiro (sem casas decimais) → +/− funciona certinho
-    help="Receita bruta estimada do mês."
-)
 
-cfg["ticket_medio"] = st.number_input(
-    "Ticket médio (R$)",
-    min_value=0.01,
-    value=float(cfg["ticket_medio"]),
-    step=1.0,
-    format="%.2f",  # força 2 casas decimais → +/− fica estável
-    help="Valor médio por pedido; usado para estimar o número de pedidos."
-)
+    cfg["faturamento"] = st.number_input(
+        "Faturamento (R$)",
+        min_value=0.0,
+        value=float(cfg["faturamento"]),
+        step=1000.0,
+        format="%.0f",   # força inteiro
+        help="Receita bruta estimada do mês."
+    )
+
+    cfg["ticket_medio"] = st.number_input(
+        "Ticket médio (R$)",
+        min_value=0.01,
+        value=float(cfg["ticket_medio"]),
+        step=1.0,
+        format="%.2f",   # 2 casas
+        help="Valor médio por pedido; usado para estimar o número de pedidos."
+    )
 
     st.divider()
     st.caption("Custos fixos (mensais)")
@@ -221,7 +222,7 @@ pedidos_mes = fat / ticket if ticket else 0.0
 fixo_base = (
     cfg["fixo_aluguel"] + cfg["fixo_gerente"] + cfg["fixo_joao"] +
     cfg["fixo_util_basico"] + cfg["fixo_depreciacao"] + cfg["fixo_anotai"] +
-    cfg["fixo_contador"]   # <— novo: Contador
+    cfg["fixo_contador"]   # Contador
 )
 
 # Cozinheiros por faixa (e quantidade)
