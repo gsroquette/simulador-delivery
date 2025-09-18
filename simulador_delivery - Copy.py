@@ -18,7 +18,7 @@ def load_config(defaults: dict):
         st.session_state.config = defaults.copy()
     cfg = st.session_state.config
     for k, v in defaults.items():
-        cfg.setdefault(k, v)
+        cfg.setdefault(k, v)  # garante chaves novas
     st.session_state.config = cfg
     return cfg
 
@@ -27,6 +27,7 @@ def save_button(config_dict):
     st.download_button("⬇️ Baixar configuração (JSON)", data=b, file_name="config_delivery.json", mime="application/json")
 
 def clone_cfg(cfg: dict) -> dict:
+    """Cópia rasa do dicionário de config."""
     return {k: (v.copy() if isinstance(v, dict) else v) for k, v in cfg.items()}
 
 # =============================
@@ -59,7 +60,7 @@ DEFAULTS = {
     "pct_marketing": 0.02,
 
     # MOTOBOYS — 100% variável por demanda
-    "perc_fds": 0.59,
+    "perc_fds": 0.59,           # ≈ 59%
     "dias_uteis": 18,
     "dias_fds": 12,
     "entregas_por_hora": 2.5,
@@ -138,7 +139,9 @@ def calcular_metricas(fat: float, cfg: dict):
     }
 
 def calcular_break_even(cfg: dict, max_iter=40):
+    """Bisseção até lucro≈0 (considera degraus de cozinheiros/motoboys)."""
     lo, hi = 0.0, max(cfg.get("faturamento", 1.0), 1.0)
+    # garante hi com lucro positivo
     while calcular_metricas(hi, cfg)["lucro"] <= 0 and hi < 5_000_000:
         hi *= 1.5
     if calcular_metricas(hi, cfg)["lucro"] <= 0:
@@ -152,8 +155,89 @@ def calcular_break_even(cfg: dict, max_iter=40):
     be_fat = hi
     return be_fat, calcular_metricas(be_fat, cfg)
 
+# ============== Projeção 24 meses ==============
+def projetar_24m(cfg: dict, meses: int, cresc_mensal: float, inflacao_fixos: float, sazonalidade: list):
+    """Retorna DataFrame com projeção mês a mês usando as regras atuais."""
+    rows = []
+    fat0 = cfg["faturamento"]
+    for m in range(meses):
+        fator_cresc = (1.0 + cresc_mensal) ** m
+        saz = sazonalidade[m % 12] if sazonalidade else 1.0
+        fat_m = fat0 * fator_cresc * saz
+
+        cfg_m = clone_cfg(cfg)
+        # aplica inflação APENAS aos fixos base (cozinheiros seguem regra por faturamento)
+        infl = (1.0 + inflacao_fixos) ** m
+        for k in ["fixo_aluguel", "fixo_gerente", "fixo_joao", "fixo_util_basico", "fixo_depreciacao", "fixo_anotai", "fixo_contador"]:
+            cfg_m[k] = cfg[k] * infl
+
+        res = calcular_metricas(fat_m, cfg_m)
+        rows.append({
+            "Mês": m+1, "Faturamento": res["fat"], "Pedidos": round(res["pedidos_mes"]),
+            "Fixos": res["fixos_total"], "Variáveis": res["variaveis_total"],
+            "Lucro": res["lucro"], "Margem (%)": res["margem"],
+            "Cozinheiros": res["cozinheiros_qtd"], "MB semana": res["motoboys_sem"], "MB FDS": res["motoboys_fds"]
+        })
+    df = pd.DataFrame(rows)
+    return df
+
+# ============== Cenários ==============
+def aplicar_cenario(cfg: dict, *, ticket_delta_pct=0.0, insumos_delta_pp=0.0,
+                    ifood_delta_pp=0.0, mkt_delta_pp=0.0,
+                    ent_h_delta_pct=0.0, diaria_mb_delta=0.0):
+    """Aplica deltas ao cfg e retorna nova cópia."""
+    c = clone_cfg(cfg)
+    c["ticket_medio"] = max(0.01, c["ticket_medio"] * (1 + ticket_delta_pct))
+    c["pct_insumos"] = max(0.0, c["pct_insumos"] + insumos_delta_pp)
+    c["pct_ifood"] = max(0.0, c["pct_ifood"] + ifood_delta_pp)
+    c["pct_marketing"] = max(0.0, c["pct_marketing"] + mkt_delta_pp)
+    c["entregas_por_hora"] = max(0.1, c["entregas_por_hora"] * (1 + ent_h_delta_pct))
+    c["mb_diaria"] = max(0.0, c["mb_diaria"] + diaria_mb_delta)
+    return c
+
+# ============== Goal Seek ==============
+def goal_seek(cfg: dict, alvo_tipo: str, alvo_valor: float, variavel: str,
+              low: float, high: float, max_iter=40):
+    """Resolve variável para bater alvo (margem% ou lucro R$) por bisseção."""
+    def medir(v):
+        c = clone_cfg(cfg)
+        if variavel == "faturamento":
+            c["faturamento"] = v
+        elif variavel == "ticket":
+            c["ticket_medio"] = v
+        elif variavel == "pct_insumos":
+            c["pct_insumos"] = v
+        elif variavel == "pct_ifood":
+            c["pct_ifood"] = v
+        elif variavel == "pct_mkt":
+            c["pct_marketing"] = v
+        r = calcular_metricas(c["faturamento"], c)
+        return r["margem"] if alvo_tipo == "margem" else r["lucro"]
+
+    # ajusta limites para garantir que cruzamos o alvo
+    t_low, t_high = medir(low), medir(high)
+    # para margem/lucro, se não cruzar, expandimos
+    tries = 0
+    while (t_low - alvo_valor) * (t_high - alvo_valor) > 0 and tries < 20:
+        if alvo_tipo == "margem" or alvo_tipo == "lucro":
+            # heurística: amplia para cima
+            high *= 1.6 if variavel in ("faturamento", "ticket") else 1.2
+            t_high = medir(high)
+        tries += 1
+
+    for _ in range(max_iter):
+        mid = 0.5 * (low + high)
+        t_mid = medir(mid)
+        if (t_low - alvo_valor) * (t_mid - alvo_valor) <= 0:
+            high, t_high = mid, t_mid
+        else:
+            low, t_low = mid, t_mid
+    sol = high
+    valor_final = medir(sol)
+    return sol, valor_final
+
 # =============================
-# Sidebar (parâmetros)
+# Sidebar (com sync do faturamento)
 # =============================
 st.title("📊 Simulador Financeiro — Delivery de Petiscos")
 
@@ -171,12 +255,15 @@ with st.sidebar:
 
     st.divider()
     st.caption("Entradas principais")
+
+    # inicializa no BE na 1ª carga
     if "initialized" not in st.session_state:
         be_init, _ = calcular_break_even(cfg)
         st.session_state.fat = be_init
         st.session_state.fat_slider = be_init
         st.session_state.initialized = True
 
+    # callbacks p/ sincronizar sidebar ↔ slider
     def _sync_from_input():
         st.session_state.fat_slider = st.session_state.fat
 
@@ -187,6 +274,7 @@ with st.sidebar:
         help="Receita bruta estimada do mês.",
         key="fat", on_change=_sync_from_input
     )
+
     cfg["ticket_medio"] = st.number_input(
         "Ticket médio (R$)", min_value=0.01,
         value=float(cfg["ticket_medio"]),
@@ -255,45 +343,32 @@ with st.sidebar:
     save_button(cfg)
 
 # =============================
-# BE e slider no topo (destaque)
+# BE de referência (sempre atual)
 # =============================
 cfg["faturamento"] = float(st.session_state.get("fat", cfg["faturamento"]))
 be_fat, be_res = calcular_break_even(cfg)
 
-# --- Slider grande no topo
-st.markdown("### Simular faturamento (R$)")
-top_col1, top_col2 = st.columns([4, 1])
-with top_col1:
-    st.caption("Arraste a barra para a esquerda/direita para testar diferentes faturamentos.")
+# =============================
+# E se…?  (slider controla o mesmo faturamento)
+# =============================
+row = st.columns([3, 1])
+with row[0]:
     st.slider(
-        "",  # sem label — usamos o título acima
+        "Simular faturamento (R$)",
         0.0, float(max(cfg["faturamento"] * 2, be_fat * 2, 10000.0)),
         float(st.session_state.get("fat_slider", cfg["faturamento"])),
-        step=1000.0, format="%.0f", key="fat_slider",
+        step=1000.0, format="%.0f",
+        key="fat_slider",
         on_change=lambda: st.session_state.update({"fat": st.session_state["fat_slider"]})
     )
-with top_col2:
-    st.write("")  # espaçador
-    st.write("")  # alinha verticalmente
+with row[1]:
     st.button(
         "🎯 Levar slider para o BE",
         use_container_width=True,
         help="Ajusta o faturamento simulado para o ponto de equilíbrio.",
         on_click=lambda: st.session_state.update({"fat": be_fat, "fat_slider": be_fat})
     )
-
-# usa o valor atual do slider
-cfg["faturamento"] = float(st.session_state["fat"])
-res = calcular_metricas(cfg["faturamento"], cfg)
-
-# --- Informativo do BE logo abaixo do slider (sem motoboys)
-delta = res["lucro"]
-if abs(delta) <= 500:
-    st.info(f"No **ponto de equilíbrio** (± {money(500)}). **BE ≈ {money(be_fat)}**.")
-elif delta > 0:
-    st.success(f"**Acima do BE** por {money(delta)} — **BE ≈ {money(be_fat)}**.")
-else:
-    st.warning(f"**Abaixo do BE** por {money(-delta)} — **BE ≈ {money(be_fat)}**.")
+cfg["faturamento"] = float(st.session_state["fat"])  # mantém em sync
 
 # =============================
 # Abas
@@ -304,7 +379,25 @@ tab_atual, tab_proj, tab_cenarios, tab_goal = st.tabs(
 
 # ======== ABA ATUAL ========
 with tab_atual:
-    st.subheader("Resultado da Simulação (com base no faturamento do slider)")
+    # cálculo com o valor atual (após slider/botão)
+    res = calcular_metricas(cfg["faturamento"], cfg)
+
+    with st.expander("📌 Referência: Ponto de Equilíbrio (não muda com o slider)", expanded=True):
+        delta = res["lucro"]
+        if abs(delta) <= 500:
+            st.info(f"Você está **no ponto de equilíbrio** (± {money(500)}) — BE ≈ {money(be_fat)}.")
+        elif delta > 0:
+            st.success(f"**Acima do BE** por {money(delta)}. BE ≈ {money(be_fat)}.")
+        else:
+            st.warning(f"**Abaixo do BE** por {money(-delta)}. BE ≈ {money(be_fat)} — faltam **{money(be_fat - res['fat'])}**.")
+
+        be_cols = st.columns(4)
+        be_cols[0].metric("BE (faturamento)", money(be_fat))
+        be_cols[1].metric("Pedidos no BE (estim.)", f"{int(round(be_fat / res['ticket'])):,}".replace(",", "."))
+        be_cols[2].metric("Motoboys semana (BE)", f"{be_res['motoboys_sem']}")
+        be_cols[3].metric("Motoboys FDS (BE)", f"{be_res['motoboys_fds']}")
+
+    st.subheader("Resultado da Simulação")
     tabela = pd.DataFrame(
         {"Valores": [
             res["fat"], round(res["pedidos_mes"]),
@@ -349,11 +442,13 @@ with tab_atual:
             st.metric("Lucro líquido", money(res["lucro"]))
             st.metric("Margem líquida", f"{res['margem']:.1f}%")
 
+        # Gráfico: Lucro vs. Faturamento com BE
         st.caption("Lucro vs. Faturamento (linha do ponto de equilíbrio)")
         plot_max = max(cfg["faturamento"] * 2, be_fat * 1.6, 20000.0)
         steps = 100
         xs = [i * (plot_max / steps) for i in range(steps + 1)]
         lucros = [calcular_metricas(x, cfg)["lucro"] for x in xs]
+
         fig, ax = plt.subplots(figsize=(7.2, 4.2))
         ax.plot(xs, lucros, linewidth=2)
         ax.axhline(0, linestyle="--", linewidth=1, color="#999")
@@ -366,29 +461,7 @@ with tab_atual:
         ax.text(be_fat, ax.get_ylim()[1]*0.95, f"BE ≈ {money(be_fat)}", rotation=90, va="top", ha="right", color="red")
         st.pyplot(fig, clear_figure=True)
 
-# ======== Abaixo seguem as mesmas abas de Projeção / Cenários / Goal seek ========
-# (mantive exatamente como estavam na sua versão anterior)
-# ---------------- PROJEÇÃO 24 MESES ----------------
-def projetar_24m(cfg: dict, meses: int, cresc_mensal: float, inflacao_fixos: float, sazonalidade: list):
-    rows = []
-    fat0 = cfg["faturamento"]
-    for m in range(meses):
-        fator_cresc = (1.0 + cresc_mensal) ** m
-        saz = sazonalidade[m % 12] if sazonalidade else 1.0
-        fat_m = fat0 * fator_cresc * saz
-        cfg_m = clone_cfg(cfg)
-        infl = (1.0 + inflacao_fixos) ** m
-        for k in ["fixo_aluguel","fixo_gerente","fixo_joao","fixo_util_basico","fixo_depreciacao","fixo_anotai","fixo_contador"]:
-            cfg_m[k] = cfg[k] * infl
-        res_m = calcular_metricas(fat_m, cfg_m)
-        rows.append({
-            "Mês": m+1, "Faturamento": res_m["fat"], "Pedidos": round(res_m["pedidos_mes"]),
-            "Fixos": res_m["fixos_total"], "Variáveis": res_m["variaveis_total"],
-            "Lucro": res_m["lucro"], "Margem (%)": res_m["margem"],
-            "Cozinheiros": res_m["cozinheiros_qtd"], "MB semana": res_m["motoboys_sem"], "MB FDS": res_m["motoboys_fds"]
-        })
-    return pd.DataFrame(rows)
-
+# ======== ABA PROJEÇÃO ========
 with tab_proj:
     st.subheader("Parâmetros da projeção")
     colp1, colp2, colp3 = st.columns(3)
@@ -399,8 +472,9 @@ with tab_proj:
     with colp3:
         inflacao_fixos = st.number_input("Inflação dos fixos (% ao mês)", 0.0, 20.0, value=0.0, step=0.1) / 100.0
 
-    st.caption("Sazonalidade (multiplicadores por mês; 12 valores). Ex.: Dezembro 1.1 = +10%.")
-    saz_df = pd.DataFrame({"Mês": ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"], "Fator": [1.00]*12})
+    st.caption("Sazonalidade (multiplicadores por mês; 12 valores). Ex.: Dezembro 1.1 = +10% sobre a média.")
+    saz_df = pd.DataFrame({"Mês": ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"],
+                           "Fator": [1.00]*12})
     saz_edit = st.data_editor(saz_df, num_rows="fixed", use_container_width=True, hide_index=True)
     sazonalidade = [float(x) if x > 0 else 1.0 for x in saz_edit["Fator"].tolist()]
 
@@ -414,6 +488,7 @@ with tab_proj:
     show["Margem (%)"] = show["Margem (%)"].map(lambda v: f"{v:.1f}%")
     st.dataframe(show, use_container_width=True)
 
+    # gráficos
     c1, c2 = st.columns(2)
     with c1:
         st.caption("Faturamento projetado")
@@ -422,23 +497,12 @@ with tab_proj:
         st.caption("Lucro projetado")
         st.line_chart(df_proj.set_index("Mês")[["Lucro"]])
 
+    # download CSV
     st.download_button("⬇️ Baixar projeção (CSV)",
                        data=df_proj.to_csv(index=False).encode("utf-8"),
                        file_name="projecao_24m.csv", mime="text/csv")
 
-# ---------------- CENÁRIOS ----------------
-def aplicar_cenario(cfg: dict, *, ticket_delta_pct=0.0, insumos_delta_pp=0.0,
-                    ifood_delta_pp=0.0, mkt_delta_pp=0.0,
-                    ent_h_delta_pct=0.0, diaria_mb_delta=0.0):
-    c = clone_cfg(cfg)
-    c["ticket_medio"] = max(0.01, c["ticket_medio"] * (1 + ticket_delta_pct))
-    c["pct_insumos"] = max(0.0, c["pct_insumos"] + insumos_delta_pp)
-    c["pct_ifood"] = max(0.0, c["pct_ifood"] + ifood_delta_pp)
-    c["pct_marketing"] = max(0.0, c["pct_marketing"] + mkt_delta_pp)
-    c["entregas_por_hora"] = max(0.1, c["entregas_por_hora"] * (1 + ent_h_delta_pct))
-    c["mb_diaria"] = max(0.0, c["mb_diaria"] + diaria_mb_delta)
-    return c
-
+# ======== ABA CENÁRIOS ========
 with tab_cenarios:
     st.subheader("Comparação de cenários no faturamento atual do slider")
 
@@ -461,6 +525,7 @@ with tab_cenarios:
     with colB: B = ui_cenario("B (Otimista)", dict(ticket=5.0, ins=-1.0, ifood=-1.0, mkt=0.0, ent=10.0, diaria=0.0))
     with colC: C = ui_cenario("C (Pessimista)", dict(ticket=-5.0, ins=1.0, ifood=1.0, mkt=1.0, ent=-10.0, diaria=0.0))
 
+    # calcula
     cen_cfgs = [
         ("A (Base)", aplicar_cenario(cfg, ticket_delta_pct=A["ticket"], insumos_delta_pp=A["ins"],
                                      ifood_delta_pp=A["ifood"], mkt_delta_pp=A["mkt"],
@@ -483,58 +548,22 @@ with tab_cenarios:
             be_local, _ = calcular_break_even(caux)
             st.caption(f"BE: {money(be_local)}")
 
-# ---------------- GOAL SEEK ----------------
-def goal_seek(cfg: dict, alvo_tipo: str, alvo_valor: float, variavel: str,
-              low: float, high: float, max_iter=40, expand_factor=1.5):
-    def medir(v):
-        c = clone_cfg(cfg)
-        if variavel == "faturamento": c["faturamento"] = v
-        elif variavel == "ticket": c["ticket_medio"] = v
-        elif variavel == "pct_insumos": c["pct_insumos"] = v
-        elif variavel == "pct_ifood": c["pct_ifood"] = v
-        elif variavel == "pct_mkt": c["pct_marketing"] = v
-        r = calcular_metricas(c["faturamento"], c)
-        return r["margem"] if alvo_tipo == "margem" else r["lucro"]
-
-    f_low, f_high = medir(low), medir(high)
-    tries = 0
-    while (f_low - alvo_valor) * (f_high - alvo_valor) > 0 and tries < 12:
-        if abs(f_high - alvo_valor) <= abs(f_low - alvo_valor):
-            high *= expand_factor
-            f_high = medir(high)
-        else:
-            low = low / expand_factor if low > 0 else low - 1
-            f_low = medir(low)
-        tries += 1
-
-    if (f_low - alvo_valor) * (f_high - alvo_valor) > 0:
-        best_v, best_f = (low, f_low) if abs(f_low - alvo_valor) <= abs(f_high - alvo_valor) else (high, f_high)
-        return best_v, best_f, False
-
-    for _ in range(max_iter):
-        mid = 0.5 * (low + high)
-        f_mid = medir(mid)
-        if (f_low - alvo_valor) * (f_mid - alvo_valor) <= 0:
-            high, f_high = mid, f_mid
-        else:
-            low, f_low = mid, f_mid
-    sol = high
-    return sol, medir(sol), True
-
+# ======== ABA GOAL SEEK ========
 with tab_goal:
     st.subheader("Resolver variável para atingir um alvo")
     col1, col2, col3 = st.columns(3)
     with col1:
         alvo_tipo = st.selectbox("Alvo", ["Margem (%)", "Lucro (R$)"])
-        alvo_input = st.number_input("Valor do alvo", value=20.0 if alvo_tipo.startswith("Margem") else 10000.0, step=1.0)
+        alvo_input = st.number_input("Valor do alvo", value=15.0 if alvo_tipo.startswith("Margem") else 10000.0, step=1.0)
     with col2:
         variavel = st.selectbox("Resolver para", ["Faturamento (R$)", "Ticket médio (R$)", "% Insumos", "% iFood", "% Marketing"])
     with col3:
-        st.write("")
+        st.write("")  # espaçador
         if st.button("Calcular"):
             alvo_kind = "margem" if alvo_tipo.startswith("Margem") else "lucro"
             var_key = {"Faturamento (R$)":"faturamento","Ticket médio (R$)":"ticket",
                        "% Insumos":"pct_insumos","% iFood":"pct_ifood","% Marketing":"pct_mkt"}[variavel]
+            # limites sensatos
             bounds = {
                 "faturamento": (0.0, max(2*cfg["faturamento"], 200000.0)),
                 "ticket": (10.0, max(2*cfg["ticket_medio"], 300.0)),
@@ -543,24 +572,13 @@ with tab_goal:
                 "pct_mkt": (0.00, 0.20),
             }[var_key]
             alvo_val = alvo_input if alvo_kind == "lucro" else float(alvo_input)
-            sol, valor_final, ok = goal_seek(cfg, alvo_kind, alvo_val, var_key, bounds[0], bounds[1])
+            sol, valor_final = goal_seek(cfg, alvo_kind, alvo_val, var_key, bounds[0], bounds[1])
 
-            def fmt_val(key, v):
-                if key in ("pct_insumos","pct_ifood","pct_mkt"): return f"{v*100:.2f}%"
-                if key == "faturamento": return money(v)
-                if key == "ticket": return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                return str(v)
-
-            if not ok:
-                alvo_txt = f"{alvo_input:.1f}%" if alvo_kind == "margem" else money(alvo_input)
-                ating_txt = f"{valor_final:.1f}%" if alvo_kind == "margem" else money(valor_final)
-                st.warning(
-                    f"Com **{variavel}** não dá para atingir **{alvo_txt}** nos limites testados.\n\n"
-                    f"Melhor que conseguimos foi **{ating_txt}** com **{variavel} = {fmt_val(var_key, sol)}**.\n\n"
-                    f"Tente resolver para **Faturamento (R$)** ou ajustar percentuais/fixos."
-                )
+            if var_key in ("pct_insumos","pct_ifood","pct_mkt"):
+                st.success(f"Solução: **{variavel} = {sol*100:.2f}%** → {alvo_tipo} atingido (≈ {valor_final:.2f if alvo_kind=='margem' else money(valor_final)})")
             else:
+                label = money(sol) if var_key in ("faturamento",) else f"R$ {sol:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                 if alvo_kind == "margem":
-                    st.success(f"Solução: **{variavel} = {fmt_val(var_key, sol)}** → Margem ≈ **{valor_final:.1f}%**")
+                    st.success(f"Solução: **{variavel} = {label}** → Margem ≈ **{valor_final:.1f}%**")
                 else:
-                    st.success(f"Solução: **{variavel} = {fmt_val(var_key, sol)}** → Lucro ≈ **{money(valor_final)}**")
+                    st.success(f"Solução: **{variavel} = {label}** → Lucro ≈ **{money(valor_final)}**")
