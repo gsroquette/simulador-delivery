@@ -3,6 +3,7 @@ import json, io, math
 import streamlit as st
 import pandas as pd
 from pandas import IndexSlice as idx
+import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Simulador Financeiro — Delivery", page_icon="📊", layout="wide")
 
@@ -261,9 +262,7 @@ with st.sidebar:
 # =============================
 # Cálculos atuais e BE
 # =============================
-# (Garanta que cfg["faturamento"] acompanha o valor sincronizado)
 cfg["faturamento"] = float(st.session_state.get("fat", cfg["faturamento"]))
-
 res = calcular_metricas(cfg["faturamento"], cfg)
 be_fat, be_res = calcular_break_even(cfg)
 
@@ -333,9 +332,9 @@ st.slider(
     step=1000.0, format="%.0f",
     key="fat_slider", on_change=lambda: st.session_state.update({"fat": st.session_state["fat_slider"]})
 )
+cfg["faturamento"] = float(st.session_state["fat"])  # mantém sync
 
-# Recalcula com o valor (o on_change já força rerun; esta linha cobre o primeiro render)
-cfg["faturamento"] = float(st.session_state["fat"])
+# Recalcula resultado atual após mexer no slider
 res = calcular_metricas(cfg["faturamento"], cfg)
 
 # =============================
@@ -353,3 +352,22 @@ if cfg["mostrar_graficos"]:
     with c2:
         st.metric("Lucro líquido", money(res["lucro"]))
         st.metric("Margem líquida", f"{res['margem']:.1f}%")
+
+    # ---- Novo gráfico: Lucro vs. Faturamento com linha do BE
+    st.caption("Lucro vs. Faturamento (linha do ponto de equilíbrio)")
+    # faixa de plotagem
+    plot_max = max(cfg["faturamento"] * 2, be_fat * 1.6, 20000.0)
+    steps = 90
+    xs = [i * (plot_max / steps) for i in range(steps + 1)]
+    lucros = [calcular_metricas(x, cfg)["lucro"] for x in xs]
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.plot(xs, lucros, linewidth=2)
+    ax.axhline(0, linestyle="--", linewidth=1)
+    ax.axvline(be_fat, linestyle="--", linewidth=1)
+    ax.set_xlabel("Faturamento (R$)")
+    ax.set_ylabel("Lucro (R$)")
+    ax.set_title("Lucro vs. Faturamento")
+    ax.text(be_fat, ax.get_ylim()[1]*0.9, f"BE ≈ {money(be_fat)}", rotation=90, va="top", ha="right")
+    ax.grid(True, alpha=0.2)
+    st.pyplot(fig, clear_figure=True)
