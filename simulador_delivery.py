@@ -5,7 +5,11 @@ import pandas as pd
 from pandas import IndexSlice as idx
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Simulador Financeiro — Delivery", page_icon="📊", layout="wide")
+st.set_page_config(
+    page_title="Simulador Financeiro — Petisco da Serra",
+    page_icon="📊",
+    layout="wide",
+)
 
 # =============================
 # Utilidades
@@ -153,7 +157,7 @@ def calcular_break_even(cfg: dict, max_iter=40):
     return be_fat, calcular_metricas(be_fat, cfg)
 
 # =============================
-# Sidebar (parâmetros)
+# Header & Sidebar
 # =============================
 st.title("📊 Simulador Financeiro — Petisco da Serra")
 
@@ -171,6 +175,7 @@ with st.sidebar:
 
     st.divider()
     st.caption("Entradas principais")
+
     if "initialized" not in st.session_state:
         be_init, _ = calcular_break_even(cfg)
         st.session_state.fat = be_init
@@ -260,13 +265,12 @@ with st.sidebar:
 cfg["faturamento"] = float(st.session_state.get("fat", cfg["faturamento"]))
 be_fat, be_res = calcular_break_even(cfg)
 
-# --- Slider grande no topo
 st.markdown("### Simular faturamento (R$)")
 top_col1, top_col2 = st.columns([4, 1])
 with top_col1:
     st.caption("Arraste a barra para testar diferentes faturamentos.")
     st.slider(
-        "",  # label vazio — título acima
+        "",  # label vazio
         0.0, float(max(cfg["faturamento"] * 2, be_fat * 2, 10000.0)),
         float(st.session_state.get("fat_slider", cfg["faturamento"])),
         step=1000.0, format="%.0f", key="fat_slider",
@@ -282,11 +286,9 @@ with top_col2:
         on_click=lambda: st.session_state.update({"fat": be_fat, "fat_slider": be_fat})
     )
 
-# usa o valor atual do slider
 cfg["faturamento"] = float(st.session_state["fat"])
 res = calcular_metricas(cfg["faturamento"], cfg)
 
-# --- Informativo do BE
 delta = res["lucro"]
 if abs(delta) <= 500:
     st.info(f"No **ponto de equilíbrio** (± {money(500)}). **BE ≈ {money(be_fat)}**.")
@@ -425,7 +427,6 @@ with tab_proj:
             )
         }
     )
-    # converte de % para fator interno
     sazonalidade = [1.0 + (pct/100.0) for pct in saz_edit["% vs média"].to_list()]
 
     df_proj = projetar_24m(cfg, meses, cresc_mensal, inflacao_fixos, sazonalidade)
@@ -450,7 +451,7 @@ with tab_proj:
                        data=df_proj.to_csv(index=False).encode("utf-8"),
                        file_name="projecao_24m.csv", mime="text/csv")
 
-# ---------------- CENÁRIOS (sliders + reset) ----------------
+# ---------------- CENÁRIOS (sliders + reset seguro) ----------------
 def aplicar_cenario(cfg: dict, *, ticket_delta_pct=0.0, insumos_delta_pp=0.0,
                     ifood_delta_pp=0.0, mkt_delta_pp=0.0,
                     ent_h_delta_pct=0.0, diaria_mb_delta=0.0):
@@ -463,71 +464,82 @@ def aplicar_cenario(cfg: dict, *, ticket_delta_pct=0.0, insumos_delta_pp=0.0,
     c["mb_diaria"] = max(0.0, c["mb_diaria"] + diaria_mb_delta)
     return c
 
+# --- Helpers p/ cenários (estado + reset callback) ---
+def _ensure_cenario_state(prefix: str, defaults: dict):
+    """Garante que as chaves do cenário existam no session_state antes dos widgets."""
+    for k in ("ticket", "ins", "ifood", "mkt", "ent", "diaria"):
+        st.session_state.setdefault(f"{prefix}_{k}", float(defaults.get(k, 0.0)))
+
+def _reset_cenario(prefix: str, defaults: dict):
+    """Callback para o botão reset: volta os valores do cenário aos defaults."""
+    for k in ("ticket", "ins", "ifood", "mkt", "ent", "diaria"):
+        st.session_state[f"{prefix}_{k}"] = float(defaults.get(k, 0.0))
+
 def ui_cenario(nome: str, key_prefix: str, defaults: dict):
+    # Inicializa estado antes de criar widgets
+    _ensure_cenario_state(key_prefix, defaults)
+
     st.markdown(f"**{nome}**")
     c1, c2, c3 = st.columns(3)
 
-    def _slider(label, minv, maxv, step, key, help_text, default):
-        return st.slider(label, min_value=float(minv), max_value=float(maxv),
-                         value=float(st.session_state.get(key, default)), step=float(step),
-                         key=key, help=help_text)
-
-    # Ticket Δ%  |  Insumos Δpp
     with c1:
-        t_pct = _slider(
-            f"Ticket Δ% ({nome})", -20.0, 20.0, 1.0,
-            f"{key_prefix}_ticket", "Variação percentual do ticket médio. Ex.: +5 = +5%.",
-            defaults.get("ticket", 0.0)
+        st.slider(
+            f"Ticket Δ% ({nome})", -20.0, 20.0,
+            value=float(st.session_state[f"{key_prefix}_ticket"]), step=1.0,
+            key=f"{key_prefix}_ticket",
+            help="Variação percentual do ticket médio. Ex.: +5 = +5%."
         )
-        i_pp = _slider(
-            f"Insumos Δpp ({nome})", -5.0, 5.0, 0.5,
-            f"{key_prefix}_ins", "Mudança em pontos percentuais. Ex.: -1 pp → 33% vira 32%.",
-            defaults.get("ins", 0.0)
+        st.slider(
+            f"Insumos Δpp ({nome})", -5.0, 5.0,
+            value=float(st.session_state[f"{key_prefix}_ins"]), step=0.5,
+            key=f"{key_prefix}_ins",
+            help="Mudança em pontos percentuais. Ex.: -1 pp → 33% vira 32%."
         )
 
-    # iFood Δpp  |  Marketing Δpp
     with c2:
-        f_pp = _slider(
-            f"iFood Δpp ({nome})", -5.0, 5.0, 0.5,
-            f"{key_prefix}_ifood", "Mudança em pontos percentuais nas taxas de iFood/cartões.",
-            defaults.get("ifood", 0.0)
+        st.slider(
+            f"iFood Δpp ({nome})", -5.0, 5.0,
+            value=float(st.session_state[f"{key_prefix}_ifood"]), step=0.5,
+            key=f"{key_prefix}_ifood",
+            help="Mudança em pontos percentuais nas taxas de iFood/cartões."
         )
-        m_pp = _slider(
-            f"Marketing Δpp ({nome})", -5.0, 5.0, 0.5,
-            f"{key_prefix}_mkt", "Mudança em pontos percentuais no marketing sobre o faturamento.",
-            defaults.get("mkt", 0.0)
+        st.slider(
+            f"Marketing Δpp ({nome})", -5.0, 5.0,
+            value=float(st.session_state[f"{key_prefix}_mkt"]), step=0.5,
+            key=f"{key_prefix}_mkt",
+            help="Mudança em pontos percentuais no marketing sobre o faturamento."
         )
 
-    # Entregas/h Δ%  |  Diária MB ΔR$
     with c3:
-        e_pct = _slider(
-            f"Entregas/h Δ% ({nome})", -30.0, 30.0, 1.0,
-            f"{key_prefix}_ent", "Produtividade do motoboy. Ex.: +10 = +10% de entregas por hora.",
-            defaults.get("ent", 0.0)
+        st.slider(
+            f"Entregas/h Δ% ({nome})", -30.0, 30.0,
+            value=float(st.session_state[f"{key_prefix}_ent"]), step=1.0,
+            key=f"{key_prefix}_ent",
+            help="Produtividade do motoboy. Ex.: +10 = +10% de entregas por hora."
         )
-        d_rs = _slider(
-            f"Diária MB ΔR$ ({nome})", -20.0, 20.0, 1.0,
-            f"{key_prefix}_diaria", "Variação absoluta na diária por motoboy em reais.",
-            defaults.get("diaria", 0.0)
+        st.slider(
+            f"Diária MB ΔR$ ({nome})", -20.0, 20.0,
+            value=float(st.session_state[f"{key_prefix}_diaria"]), step=1.0,
+            key=f"{key_prefix}_diaria",
+            help="Variação absoluta na diária por motoboy em reais."
         )
 
-    # Botão de reset do cenário
-    if st.button(f"↺ Resetar {nome}", key=f"reset_{key_prefix}"):
-        st.session_state[f"{key_prefix}_ticket"] = defaults.get("ticket", 0.0)
-        st.session_state[f"{key_prefix}_ins"] = defaults.get("ins", 0.0)
-        st.session_state[f"{key_prefix}_ifood"] = defaults.get("ifood", 0.0)
-        st.session_state[f"{key_prefix}_mkt"] = defaults.get("mkt", 0.0)
-        st.session_state[f"{key_prefix}_ent"] = defaults.get("ent", 0.0)
-        st.session_state[f"{key_prefix}_diaria"] = defaults.get("diaria", 0.0)
+    st.button(
+        f"↺ Resetar {nome}",
+        key=f"reset_{key_prefix}",
+        on_click=_reset_cenario,
+        args=(key_prefix, defaults),
+        help="Volta os ajustes deste cenário para os valores padrão."
+    )
 
-    # Converte para os formatos esperados (frações/pp/R$)
+    # Retorna valores convertidos p/ cálculo
     return dict(
-        ticket=t_pct/100.0,
-        ins=i_pp/100.0,
-        ifood=f_pp/100.0,
-        mkt=m_pp/100.0,
-        ent=e_pct/100.0,
-        diaria=d_rs
+        ticket=float(st.session_state[f"{key_prefix}_ticket"]) / 100.0,
+        ins=float(st.session_state[f"{key_prefix}_ins"]) / 100.0,
+        ifood=float(st.session_state[f"{key_prefix}_ifood"]) / 100.0,
+        mkt=float(st.session_state[f"{key_prefix}_mkt"]) / 100.0,
+        ent=float(st.session_state[f"{key_prefix}_ent"]) / 100.0,
+        diaria=float(st.session_state[f"{key_prefix}_diaria"])
     )
 
 with tab_cenarios:
