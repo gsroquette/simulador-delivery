@@ -17,7 +17,7 @@ def load_config(defaults: dict):
         st.session_state.config = defaults.copy()
     cfg = st.session_state.config
     for k, v in defaults.items():
-        cfg.setdefault(k, v)  # compat: completa chaves novas
+        cfg.setdefault(k, v)  # compat
     st.session_state.config = cfg
     return cfg
 
@@ -40,14 +40,14 @@ DEFAULTS = {
     "fixo_util_basico": 1000.0,
     "fixo_depreciacao": 200.0,
     "fixo_anotai": 279.79,
-    "fixo_contador": 0.0,   # Contador (novo)
+    "fixo_contador": 0.0,
 
     # COZINHEIROS (por faixa de faturamento)
     "cook_t1_limite": 50000.0,   "cook_t1_sal": 5000.0,   # 2 cozinheiros
     "cook_t2_limite": 150000.0,  "cook_t2_sal": 7500.0,   # 3 cozinheiros
-    "cook_t3_sal": 10000.0,                              # 4 cozinheiros
+    "cook_t3_sal": 10000.0,                               # 4 cozinheiros
 
-    # VARIÁVEIS (fração; exibimos como % na UI)
+    # VARIÁVEIS (% sobre faturamento)
     "pct_insumos": 0.333,
     "pct_embalagens": 0.02,
     "pct_energia_extra": 0.015,
@@ -55,7 +55,7 @@ DEFAULTS = {
     "pct_marketing": 0.02,
 
     # MOTOBOYS — 100% variável por demanda
-    "perc_fds": 0.59,              # padrão ≈ 59%
+    "perc_fds": 0.59,           # ≈ 59%
     "dias_uteis": 18,
     "dias_fds": 12,
     "entregas_por_hora": 2.5,
@@ -69,65 +69,52 @@ DEFAULTS = {
 }
 
 # =============================
-# Funções de cálculo (uma única fonte de verdade)
+# Núcleo de cálculo
 # =============================
 def calcular_metricas(fat: float, cfg: dict):
-    """Calcula tudo para um faturamento dado, usando a config atual."""
     ticket = cfg["ticket_medio"]
     pedidos_mes = fat / ticket if ticket else 0.0
 
-    # Fixos base
     fixo_base = (
         cfg["fixo_aluguel"] + cfg["fixo_gerente"] + cfg["fixo_joao"] +
         cfg["fixo_util_basico"] + cfg["fixo_depreciacao"] + cfg["fixo_anotai"] +
         cfg["fixo_contador"]
     )
 
-    # Cozinheiros por faixa (e quantidade)
+    # tiers de cozinheiros
     if fat <= cfg["cook_t1_limite"]:
-        cozinheiros_custo = cfg["cook_t1_sal"]
-        cozinheiros_qtd = 2
+        cozinheiros_custo, cozinheiros_qtd = cfg["cook_t1_sal"], 2
     elif fat <= cfg["cook_t2_limite"]:
-        cozinheiros_custo = cfg["cook_t2_sal"]
-        cozinheiros_qtd = 3
+        cozinheiros_custo, cozinheiros_qtd = cfg["cook_t2_sal"], 3
     else:
-        cozinheiros_custo = cfg["cook_t3_sal"]
-        cozinheiros_qtd = 4
+        cozinheiros_custo, cozinheiros_qtd = cfg["cook_t3_sal"], 4
 
     fixos_total = fixo_base + cozinheiros_custo
 
-    # Variáveis (% do faturamento)
+    # variáveis %
     insumos = fat * cfg["pct_insumos"]
     embalagens = fat * cfg["pct_embalagens"]
     energia_extra = fat * cfg["pct_energia_extra"]
     ifood = fat * cfg["pct_ifood"]
     marketing = fat * cfg["pct_marketing"]
 
-    # Motoboys
+    # motoboys por demanda
     perc_fds = cfg["perc_fds"]
-    dias_uteis = cfg["dias_uteis"]
-    dias_fds = cfg["dias_fds"]
-    entregas_por_hora = cfg["entregas_por_hora"]
-    horas_semana = cfg["horas_semana"]
-    horas_fds = cfg["horas_fds"]
-    motoboys_min = cfg["motoboys_minimos"]
+    dias_uteis, dias_fds = cfg["dias_uteis"], cfg["dias_fds"]
+    ent_h, h_sem, h_fds = cfg["entregas_por_hora"], cfg["horas_semana"], cfg["horas_fds"]
+    mb_min = cfg["motoboys_minimos"]
 
-    pedidos_fds = pedidos_mes * perc_fds
-    pedidos_sem = pedidos_mes * (1 - perc_fds)
-
+    pedidos_fds, pedidos_sem = pedidos_mes * perc_fds, pedidos_mes * (1 - perc_fds)
     pedidos_dia_sem = (pedidos_sem / dias_uteis) if dias_uteis else 0.0
     pedidos_dia_fds = (pedidos_fds / dias_fds) if dias_fds else 0.0
 
-    cap_sem = entregas_por_hora * horas_semana
-    cap_fds = entregas_por_hora * horas_fds
-
-    motoboys_sem = max(motoboys_min, math.ceil(pedidos_dia_sem / cap_sem)) if cap_sem > 0 else motoboys_min
-    motoboys_fds = max(motoboys_min, math.ceil(pedidos_dia_fds / cap_fds)) if cap_fds > 0 else motoboys_min
+    cap_sem, cap_fds = ent_h * h_sem, ent_h * h_fds
+    motoboys_sem = max(mb_min, math.ceil(pedidos_dia_sem / cap_sem)) if cap_sem > 0 else mb_min
+    motoboys_fds = max(mb_min, math.ceil(pedidos_dia_fds / cap_fds)) if cap_fds > 0 else mb_min
 
     diarias_sem = motoboys_sem * cfg["mb_diaria"] * dias_uteis
     diarias_fds = motoboys_fds * cfg["mb_diaria"] * dias_fds
     custo_por_entregas = pedidos_mes * cfg["mb_custo_por_entrega"]
-
     custo_motoboys_total = diarias_sem + diarias_fds + custo_por_entregas
 
     variaveis_total = insumos + embalagens + energia_extra + ifood + marketing + custo_motoboys_total
@@ -136,42 +123,26 @@ def calcular_metricas(fat: float, cfg: dict):
     margem = (lucro / fat * 100) if fat > 0 else 0.0
 
     return {
-        "fat": fat,
-        "ticket": ticket,
-        "pedidos_mes": pedidos_mes,
-        "fixos_total": fixos_total,
-        "insumos": insumos,
-        "embalagens": embalagens,
-        "energia_extra": energia_extra,
-        "ifood": ifood,
-        "marketing": marketing,
-        "custo_motoboys_total": custo_motoboys_total,
-        "variaveis_total": variaveis_total,
-        "total_custos": total_custos,
-        "lucro": lucro,
-        "margem": margem,
-        "pedidos_dia_sem": pedidos_dia_sem,
-        "pedidos_dia_fds": pedidos_dia_fds,
-        "motoboys_sem": motoboys_sem,
-        "motoboys_fds": motoboys_fds,
+        "fat": fat, "ticket": ticket, "pedidos_mes": pedidos_mes,
+        "fixos_total": fixos_total, "insumos": insumos, "embalagens": embalagens,
+        "energia_extra": energia_extra, "ifood": ifood, "marketing": marketing,
+        "custo_motoboys_total": custo_motoboys_total, "variaveis_total": variaveis_total,
+        "total_custos": total_custos, "lucro": lucro, "margem": margem,
+        "pedidos_dia_sem": pedidos_dia_sem, "pedidos_dia_fds": pedidos_dia_fds,
+        "motoboys_sem": motoboys_sem, "motoboys_fds": motoboys_fds,
         "cozinheiros_qtd": cozinheiros_qtd,
     }
 
 def calcular_break_even(cfg: dict, max_iter=40):
-    """Encontra o faturamento onde lucro≈0 usando bisseção (considera degraus de motoboy/cozinheiro)."""
-    lo = 0.0
-    hi = max(cfg["faturamento"], 1.0)
-    # aumenta hi até lucro > 0 (ou limite alto)
+    """Bisseção até lucro≈0 (considera degraus de cozinheiros/motoboys)."""
+    lo, hi = 0.0, max(cfg.get("faturamento", 1.0), 1.0)
     while calcular_metricas(hi, cfg)["lucro"] <= 0 and hi < 5_000_000:
         hi *= 1.5
-    # se nem assim ficou positivo, retorna hi como melhor palpite
     if calcular_metricas(hi, cfg)["lucro"] <= 0:
         return hi, calcular_metricas(hi, cfg)
-
     for _ in range(max_iter):
         mid = 0.5 * (lo + hi)
-        lucro_mid = calcular_metricas(mid, cfg)["lucro"]
-        if lucro_mid > 0:
+        if calcular_metricas(mid, cfg)["lucro"] > 0:
             hi = mid
         else:
             lo = mid
@@ -179,7 +150,7 @@ def calcular_break_even(cfg: dict, max_iter=40):
     return be_fat, calcular_metricas(be_fat, cfg)
 
 # =============================
-# Interface
+# Sidebar (com sync de faturamento)
 # =============================
 st.title("📊 Simulador Financeiro — Delivery de Petiscos")
 
@@ -187,10 +158,8 @@ with st.sidebar:
     st.header("⚙️ Configuração")
     cfg = load_config(DEFAULTS)
 
-    up = st.file_uploader(
-        "Carregar configuração (JSON)", type=["json"],
-        help="Suba um arquivo salvo pelo botão de download para restaurar todos os parâmetros."
-    )
+    up = st.file_uploader("Carregar configuração (JSON)", type=["json"],
+                          help="Suba um arquivo salvo pelo botão de download para restaurar todos os parâmetros.")
     if up:
         cfg = json.load(up)
         for k, v in DEFAULTS.items():
@@ -199,20 +168,33 @@ with st.sidebar:
 
     st.divider()
     st.caption("Entradas principais")
+
+    # ---- inicialização: define faturamento = BE ao abrir pela 1ª vez
+    if "initialized" not in st.session_state:
+        be_init, _ = calcular_break_even(cfg)
+        st.session_state.fat = be_init
+        st.session_state.fat_slider = be_init
+        st.session_state.initialized = True
+
+    # callbacks para manter sincronizado
+    def _sync_from_input():
+        st.session_state.fat_slider = st.session_state.fat
+
+    def _sync_from_slider():
+        st.session_state.fat = st.session_state.fat_slider
+
     cfg["faturamento"] = st.number_input(
-        "Faturamento (R$)",
-        min_value=0.0,
-        value=float(cfg["faturamento"]),
-        step=1000.0,
-        format="%.0f",
-        help="Receita bruta estimada do mês."
+        "Faturamento (R$)", min_value=0.0,
+        value=float(st.session_state.get("fat", cfg["faturamento"])),
+        step=1000.0, format="%.0f",
+        help="Receita bruta estimada do mês.",
+        key="fat", on_change=_sync_from_input
     )
+
     cfg["ticket_medio"] = st.number_input(
-        "Ticket médio (R$)",
-        min_value=0.01,
+        "Ticket médio (R$)", min_value=0.01,
         value=float(cfg["ticket_medio"]),
-        step=1.0,
-        format="%.2f",
+        step=1.0, format="%.2f",
         help="Valor médio por pedido; usado para estimar o número de pedidos."
     )
 
@@ -277,15 +259,18 @@ with st.sidebar:
     save_button(cfg)
 
 # =============================
-# Cálculos (faturamento atual)
+# Cálculos atuais e BE
 # =============================
+# (Garanta que cfg["faturamento"] acompanha o valor sincronizado)
+cfg["faturamento"] = float(st.session_state.get("fat", cfg["faturamento"]))
+
 res = calcular_metricas(cfg["faturamento"], cfg)
+be_fat, be_res = calcular_break_even(cfg)
 
 # =============================
-# Saída: tabela principal
+# Tabela principal
 # =============================
 st.subheader("Resultado da Simulação")
-
 tabela = pd.DataFrame(
     {"Valores": [
         res["fat"], round(res["pedidos_mes"]),
@@ -309,17 +294,15 @@ styler = tabela.style \
 st.dataframe(styler, use_container_width=True)
 
 # =============================
-# Indicador de Ponto de Equilíbrio (BE)
+# Indicador do BE
 # =============================
-be_fat, be_res = calcular_break_even(cfg)
 delta = res["lucro"]
-
 if abs(delta) <= 500:
     st.info(f"📍 Você está **no ponto de equilíbrio** (± {money(500)}) — BE ≈ {money(be_fat)}.")
 elif delta > 0:
-    st.success(f"🟢 **Acima do BE** por {money(delta)}. BE ≈ {money(be_fat)} (faltaria faturar {money(0)}).")
+    st.success(f"🟢 **Acima do BE** por {money(delta)}. BE ≈ {money(be_fat)}.")
 else:
-    st.warning(f"🔴 **Abaixo do BE** por {money(-delta)}. BE ≈ {money(be_fat)} — faltam **{money(be_fat - res['fat'])}** de faturamento.")
+    st.warning(f"🔴 **Abaixo do BE** por {money(-delta)}. BE ≈ {money(be_fat)} — faltam **{money(be_fat - res['fat'])}**.")
 
 be_cols = st.columns(4)
 be_cols[0].metric("BE (faturamento)", money(be_fat))
@@ -328,7 +311,7 @@ be_cols[2].metric("Motoboys semana (BE)", f"{be_res['motoboys_sem']}")
 be_cols[3].metric("Motoboys FDS (BE)", f"{be_res['motoboys_fds']}")
 
 # =============================
-# Métricas atuais (acima dos gráficos)
+# Métricas atuais
 # =============================
 st.caption("Dimensionamento (estimado)")
 m1, m2, m3, m4, m5 = st.columns(5)
@@ -339,22 +322,24 @@ m4.metric("Motoboys no FDS", f"{res['motoboys_fds']}")
 m5.metric("Cozinheiros", f"{res['cozinheiros_qtd']}")
 
 # =============================
-# Seção “E se…?” (simulador rápido)
+# E se…? (o slider controla o mesmo 'faturamento')
 # =============================
 st.subheader("E se…? (simule diferentes faturamentos)")
 max_slider = max(cfg["faturamento"] * 2, be_fat * 2, 10000.0)
-sim_fat = st.slider("Simular faturamento (R$)", 0.0, float(max_slider), float(cfg["faturamento"]), step=1000.0, format="%.0f")
-sim = calcular_metricas(sim_fat, cfg)
+st.slider(
+    "Simular faturamento (R$)",
+    0.0, float(max_slider),
+    float(st.session_state.get("fat_slider", cfg["faturamento"])),
+    step=1000.0, format="%.0f",
+    key="fat_slider", on_change=lambda: st.session_state.update({"fat": st.session_state["fat_slider"]})
+)
 
-cA, cB, cC, cD, cE = st.columns(5)
-cA.metric("Faturamento simulado", money(sim["fat"]))
-cB.metric("Lucro simulado", money(sim["lucro"]))
-cC.metric("Margem simulada", f"{sim['margem']:.1f}%")
-cD.metric("Motoboys semana (sim)", f"{sim['motoboys_sem']}")
-cE.metric("Motoboys FDS (sim)", f"{sim['motoboys_fds']}")
+# Recalcula com o valor (o on_change já força rerun; esta linha cobre o primeiro render)
+cfg["faturamento"] = float(st.session_state["fat"])
+res = calcular_metricas(cfg["faturamento"], cfg)
 
 # =============================
-# Gráficos e KPIs de lucro
+# Gráficos
 # =============================
 if cfg["mostrar_graficos"]:
     c1, c2 = st.columns(2)
@@ -366,5 +351,5 @@ if cfg["mostrar_graficos"]:
         }).set_index("Categoria")
         st.bar_chart(chart_df)
     with c2:
-        st.metric("Lucro líquido", money(res["lucro"]), help="Faturamento - (Fixos + Variáveis).")
-        st.metric("Margem líquida", f"{res['margem']:.1f}%", help="Lucro líquido / Faturamento.")
+        st.metric("Lucro líquido", money(res["lucro"]))
+        st.metric("Margem líquida", f"{res['margem']:.1f}%")
