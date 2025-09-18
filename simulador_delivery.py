@@ -18,7 +18,7 @@ def load_config(defaults: dict):
         st.session_state.config = defaults.copy()
     cfg = st.session_state.config
     for k, v in defaults.items():
-        cfg.setdefault(k, v)  # compat
+        cfg.setdefault(k, v)  # garante chaves novas
     st.session_state.config = cfg
     return cfg
 
@@ -137,6 +137,7 @@ def calcular_metricas(fat: float, cfg: dict):
 def calcular_break_even(cfg: dict, max_iter=40):
     """Bisseção até lucro≈0 (considera degraus de cozinheiros/motoboys)."""
     lo, hi = 0.0, max(cfg.get("faturamento", 1.0), 1.0)
+    # garante hi com lucro positivo
     while calcular_metricas(hi, cfg)["lucro"] <= 0 and hi < 5_000_000:
         hi *= 1.5
     if calcular_metricas(hi, cfg)["lucro"] <= 0:
@@ -151,7 +152,7 @@ def calcular_break_even(cfg: dict, max_iter=40):
     return be_fat, calcular_metricas(be_fat, cfg)
 
 # =============================
-# Sidebar (com sync de faturamento)
+# Sidebar (com sync do faturamento)
 # =============================
 st.title("📊 Simulador Financeiro — Delivery de Petiscos")
 
@@ -170,14 +171,14 @@ with st.sidebar:
     st.divider()
     st.caption("Entradas principais")
 
-    # ---- inicialização: define faturamento = BE ao abrir pela 1ª vez
+    # inicializa no BE na 1ª carga
     if "initialized" not in st.session_state:
         be_init, _ = calcular_break_even(cfg)
         st.session_state.fat = be_init
         st.session_state.fat_slider = be_init
         st.session_state.initialized = True
 
-    # callbacks para manter sincronizado
+    # callbacks p/ sincronizar sidebar ↔ slider
     def _sync_from_input():
         st.session_state.fat_slider = st.session_state.fat
 
@@ -260,16 +261,52 @@ with st.sidebar:
     save_button(cfg)
 
 # =============================
-# Cálculos atuais e BE
+# BE de referência (sempre atual)
 # =============================
 cfg["faturamento"] = float(st.session_state.get("fat", cfg["faturamento"]))
-res = calcular_metricas(cfg["faturamento"], cfg)
 be_fat, be_res = calcular_break_even(cfg)
 
 # =============================
-# Tabela principal
+# E se…?  (slider controla o mesmo faturamento)
+# =============================
+st.subheader("E se…? (simule diferentes faturamentos)")
+max_slider = max(cfg["faturamento"] * 2, be_fat * 2, 10000.0)
+st.slider(
+    "Simular faturamento (R$)",
+    0.0, float(max_slider),
+    float(st.session_state.get("fat_slider", cfg["faturamento"])),
+    step=1000.0, format="%.0f",
+    key="fat_slider",
+    on_change=lambda: st.session_state.update({"fat": st.session_state["fat_slider"]})
+)
+cfg["faturamento"] = float(st.session_state["fat"])  # mantém em sync
+
+# Cálculo com o valor atual (após slider)
+res = calcular_metricas(cfg["faturamento"], cfg)
+
+# =============================
+# Referência do BE (em expander para melhor leitura)
+# =============================
+with st.expander("📌 Referência: Ponto de Equilíbrio (não muda com o slider)", expanded=True):
+    delta = res["lucro"]
+    if abs(delta) <= 500:
+        st.info(f"Você está **no ponto de equilíbrio** (± {money(500)}) — BE ≈ {money(be_fat)}.")
+    elif delta > 0:
+        st.success(f"**Acima do BE** por {money(delta)}. BE ≈ {money(be_fat)}.")
+    else:
+        st.warning(f"**Abaixo do BE** por {money(-delta)}. BE ≈ {money(be_fat)} — faltam **{money(be_fat - res['fat'])}**.")
+
+    be_cols = st.columns(4)
+    be_cols[0].metric("BE (faturamento)", money(be_fat))
+    be_cols[1].metric("Pedidos no BE (estim.)", f"{int(round(be_fat / res['ticket'])):,}".replace(",", "."))
+    be_cols[2].metric("Motoboys semana (BE)", f"{be_res['motoboys_sem']}")
+    be_cols[3].metric("Motoboys FDS (BE)", f"{be_res['motoboys_fds']}")
+
+# =============================
+# Resultado atual (controlado pelo slider)
 # =============================
 st.subheader("Resultado da Simulação")
+
 tabela = pd.DataFrame(
     {"Valores": [
         res["fat"], round(res["pedidos_mes"]),
@@ -292,26 +329,6 @@ styler = tabela.style \
     .format(lambda v: f"{v:.1f}%", subset=idx[["Margem líquida (%)"], "Valores"])
 st.dataframe(styler, use_container_width=True)
 
-# =============================
-# Indicador do BE
-# =============================
-delta = res["lucro"]
-if abs(delta) <= 500:
-    st.info(f"📍 Você está **no ponto de equilíbrio** (± {money(500)}) — BE ≈ {money(be_fat)}.")
-elif delta > 0:
-    st.success(f"🟢 **Acima do BE** por {money(delta)}. BE ≈ {money(be_fat)}.")
-else:
-    st.warning(f"🔴 **Abaixo do BE** por {money(-delta)}. BE ≈ {money(be_fat)} — faltam **{money(be_fat - res['fat'])}**.")
-
-be_cols = st.columns(4)
-be_cols[0].metric("BE (faturamento)", money(be_fat))
-be_cols[1].metric("Pedidos no BE (estim.)", f"{int(round(be_fat / res['ticket'])):,}".replace(",", "."))
-be_cols[2].metric("Motoboys semana (BE)", f"{be_res['motoboys_sem']}")
-be_cols[3].metric("Motoboys FDS (BE)", f"{be_res['motoboys_fds']}")
-
-# =============================
-# Métricas atuais
-# =============================
 st.caption("Dimensionamento (estimado)")
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Pedidos/dia útil", f"{res['pedidos_dia_sem']:.1f}")
@@ -319,23 +336,6 @@ m2.metric("Pedidos/dia FDS", f"{res['pedidos_dia_fds']:.1f}")
 m3.metric("Motoboys na semana", f"{res['motoboys_sem']}")
 m4.metric("Motoboys no FDS", f"{res['motoboys_fds']}")
 m5.metric("Cozinheiros", f"{res['cozinheiros_qtd']}")
-
-# =============================
-# E se…? (o slider controla o mesmo 'faturamento')
-# =============================
-st.subheader("E se…? (simule diferentes faturamentos)")
-max_slider = max(cfg["faturamento"] * 2, be_fat * 2, 10000.0)
-st.slider(
-    "Simular faturamento (R$)",
-    0.0, float(max_slider),
-    float(st.session_state.get("fat_slider", cfg["faturamento"])),
-    step=1000.0, format="%.0f",
-    key="fat_slider", on_change=lambda: st.session_state.update({"fat": st.session_state["fat_slider"]})
-)
-cfg["faturamento"] = float(st.session_state["fat"])  # mantém sync
-
-# Recalcula resultado atual após mexer no slider
-res = calcular_metricas(cfg["faturamento"], cfg)
 
 # =============================
 # Gráficos
@@ -349,25 +349,28 @@ if cfg["mostrar_graficos"]:
             "Valor": [res["fixos_total"], res["insumos"], res["embalagens"], res["energia_extra"], res["ifood"], res["marketing"], res["custo_motoboys_total"]]
         }).set_index("Categoria")
         st.bar_chart(chart_df)
+
     with c2:
+        st.caption("Lucro líquido e Margem")
         st.metric("Lucro líquido", money(res["lucro"]))
         st.metric("Margem líquida", f"{res['margem']:.1f}%")
 
-    # ---- Novo gráfico: Lucro vs. Faturamento com linha do BE
+    # Gráfico: Lucro vs. Faturamento com BE
     st.caption("Lucro vs. Faturamento (linha do ponto de equilíbrio)")
-    # faixa de plotagem
     plot_max = max(cfg["faturamento"] * 2, be_fat * 1.6, 20000.0)
-    steps = 90
+    steps = 100
     xs = [i * (plot_max / steps) for i in range(steps + 1)]
     lucros = [calcular_metricas(x, cfg)["lucro"] for x in xs]
 
-    fig, ax = plt.subplots(figsize=(7, 4))
+    fig, ax = plt.subplots(figsize=(7.2, 4.2))
     ax.plot(xs, lucros, linewidth=2)
-    ax.axhline(0, linestyle="--", linewidth=1)
-    ax.axvline(be_fat, linestyle="--", linewidth=1)
+    ax.axhline(0, linestyle="--", linewidth=1, color="#999")
+    ax.axvline(be_fat, linestyle="--", linewidth=1, color="red")
+    # marca o ponto atual
+    ax.scatter([res["fat"]], [res["lucro"]], s=40, zorder=3)
     ax.set_xlabel("Faturamento (R$)")
     ax.set_ylabel("Lucro (R$)")
     ax.set_title("Lucro vs. Faturamento")
-    ax.text(be_fat, ax.get_ylim()[1]*0.9, f"BE ≈ {money(be_fat)}", rotation=90, va="top", ha="right")
     ax.grid(True, alpha=0.2)
+    ax.text(be_fat, ax.get_ylim()[1]*0.95, f"BE ≈ {money(be_fat)}", rotation=90, va="top", ha="right", color="red")
     st.pyplot(fig, clear_figure=True)
