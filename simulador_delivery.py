@@ -155,7 +155,7 @@ def calcular_break_even(cfg: dict, max_iter=40):
 # =============================
 # Sidebar (parâmetros)
 # =============================
-st.title("📊 Simulador Financeiro — Delivery de Petiscos")
+st.title("📊 Simulador Financeiro — Petisco da Serra")
 
 with st.sidebar:
     st.header("⚙️ Configuração")
@@ -264,17 +264,17 @@ be_fat, be_res = calcular_break_even(cfg)
 st.markdown("### Simular faturamento (R$)")
 top_col1, top_col2 = st.columns([4, 1])
 with top_col1:
-    st.caption("Arraste a barra para a esquerda/direita para testar diferentes faturamentos.")
+    st.caption("Arraste a barra para testar diferentes faturamentos.")
     st.slider(
-        "",  # sem label — usamos o título acima
+        "",  # label vazio — título acima
         0.0, float(max(cfg["faturamento"] * 2, be_fat * 2, 10000.0)),
         float(st.session_state.get("fat_slider", cfg["faturamento"])),
         step=1000.0, format="%.0f", key="fat_slider",
         on_change=lambda: st.session_state.update({"fat": st.session_state["fat_slider"]})
     )
 with top_col2:
-    st.write("")  # espaçador
-    st.write("")  # alinha verticalmente
+    st.write("")
+    st.write("")
     st.button(
         "🎯 Levar slider para o BE",
         use_container_width=True,
@@ -286,7 +286,7 @@ with top_col2:
 cfg["faturamento"] = float(st.session_state["fat"])
 res = calcular_metricas(cfg["faturamento"], cfg)
 
-# --- Informativo do BE logo abaixo do slider (sem motoboys)
+# --- Informativo do BE
 delta = res["lucro"]
 if abs(delta) <= 500:
     st.info(f"No **ponto de equilíbrio** (± {money(500)}). **BE ≈ {money(be_fat)}**.")
@@ -366,8 +366,6 @@ with tab_atual:
         ax.text(be_fat, ax.get_ylim()[1]*0.95, f"BE ≈ {money(be_fat)}", rotation=90, va="top", ha="right", color="red")
         st.pyplot(fig, clear_figure=True)
 
-# ======== Abaixo seguem as mesmas abas de Projeção / Cenários / Goal seek ========
-# (mantive exatamente como estavam na sua versão anterior)
 # ---------------- PROJEÇÃO 24 MESES ----------------
 def projetar_24m(cfg: dict, meses: int, cresc_mensal: float, inflacao_fixos: float, sazonalidade: list):
     rows = []
@@ -399,10 +397,36 @@ with tab_proj:
     with colp3:
         inflacao_fixos = st.number_input("Inflação dos fixos (% ao mês)", 0.0, 20.0, value=0.0, step=0.1) / 100.0
 
-    st.caption("Sazonalidade (multiplicadores por mês; 12 valores). Ex.: Dezembro 1.1 = +10%.")
-    saz_df = pd.DataFrame({"Mês": ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"], "Fator": [1.00]*12})
-    saz_edit = st.data_editor(saz_df, num_rows="fixed", use_container_width=True, hide_index=True)
-    sazonalidade = [float(x) if x > 0 else 1.0 for x in saz_edit["Fator"].tolist()]
+    # --- Sazonalidade em % (não mais fator)
+    st.markdown("Sazonalidade (percentual por mês, 12 valores). Ex.: Dezembro **+10** = +10% sobre a média.")
+    with st.expander("❓ O que é e como usar a sazonalidade?", expanded=False):
+        st.write(
+            """
+            - Digite um **percentual** para cada mês, **em relação à média** (0 = mês neutro).
+            - Exemplos:
+                - Dezembro **+10** → aumenta o faturamento de dez em **10%**.
+                - Janeiro **-5** → reduz o faturamento de jan em **5%**.
+            - Esses percentuais são aplicados **só no faturamento** da projeção.
+            - Se não quiser sazonalidade, **deixe tudo em 0**.
+            """
+        )
+    meses_nomes = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"]
+    saz_df = pd.DataFrame({"Mês": meses_nomes, "% vs média": [0.0]*12})
+    saz_edit = st.data_editor(
+        saz_df,
+        num_rows="fixed",
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "% vs média": st.column_config.NumberColumn(
+                "% vs média",
+                help="Digite +10 para +10% ou -5 para -5% versus a média do ano.",
+                format="%.2f", step=1.0
+            )
+        }
+    )
+    # converte de % para fator interno
+    sazonalidade = [1.0 + (pct/100.0) for pct in saz_edit["% vs média"].to_list()]
 
     df_proj = projetar_24m(cfg, meses, cresc_mensal, inflacao_fixos, sazonalidade)
 
@@ -426,7 +450,7 @@ with tab_proj:
                        data=df_proj.to_csv(index=False).encode("utf-8"),
                        file_name="projecao_24m.csv", mime="text/csv")
 
-# ---------------- CENÁRIOS ----------------
+# ---------------- CENÁRIOS (sliders + reset) ----------------
 def aplicar_cenario(cfg: dict, *, ticket_delta_pct=0.0, insumos_delta_pp=0.0,
                     ifood_delta_pp=0.0, mkt_delta_pp=0.0,
                     ent_h_delta_pct=0.0, diaria_mb_delta=0.0):
@@ -439,27 +463,83 @@ def aplicar_cenario(cfg: dict, *, ticket_delta_pct=0.0, insumos_delta_pp=0.0,
     c["mb_diaria"] = max(0.0, c["mb_diaria"] + diaria_mb_delta)
     return c
 
+def ui_cenario(nome: str, key_prefix: str, defaults: dict):
+    st.markdown(f"**{nome}**")
+    c1, c2, c3 = st.columns(3)
+
+    def _slider(label, minv, maxv, step, key, help_text, default):
+        return st.slider(label, min_value=float(minv), max_value=float(maxv),
+                         value=float(st.session_state.get(key, default)), step=float(step),
+                         key=key, help=help_text)
+
+    # Ticket Δ%  |  Insumos Δpp
+    with c1:
+        t_pct = _slider(
+            f"Ticket Δ% ({nome})", -20.0, 20.0, 1.0,
+            f"{key_prefix}_ticket", "Variação percentual do ticket médio. Ex.: +5 = +5%.",
+            defaults.get("ticket", 0.0)
+        )
+        i_pp = _slider(
+            f"Insumos Δpp ({nome})", -5.0, 5.0, 0.5,
+            f"{key_prefix}_ins", "Mudança em pontos percentuais. Ex.: -1 pp → 33% vira 32%.",
+            defaults.get("ins", 0.0)
+        )
+
+    # iFood Δpp  |  Marketing Δpp
+    with c2:
+        f_pp = _slider(
+            f"iFood Δpp ({nome})", -5.0, 5.0, 0.5,
+            f"{key_prefix}_ifood", "Mudança em pontos percentuais nas taxas de iFood/cartões.",
+            defaults.get("ifood", 0.0)
+        )
+        m_pp = _slider(
+            f"Marketing Δpp ({nome})", -5.0, 5.0, 0.5,
+            f"{key_prefix}_mkt", "Mudança em pontos percentuais no marketing sobre o faturamento.",
+            defaults.get("mkt", 0.0)
+        )
+
+    # Entregas/h Δ%  |  Diária MB ΔR$
+    with c3:
+        e_pct = _slider(
+            f"Entregas/h Δ% ({nome})", -30.0, 30.0, 1.0,
+            f"{key_prefix}_ent", "Produtividade do motoboy. Ex.: +10 = +10% de entregas por hora.",
+            defaults.get("ent", 0.0)
+        )
+        d_rs = _slider(
+            f"Diária MB ΔR$ ({nome})", -20.0, 20.0, 1.0,
+            f"{key_prefix}_diaria", "Variação absoluta na diária por motoboy em reais.",
+            defaults.get("diaria", 0.0)
+        )
+
+    # Botão de reset do cenário
+    if st.button(f"↺ Resetar {nome}", key=f"reset_{key_prefix}"):
+        st.session_state[f"{key_prefix}_ticket"] = defaults.get("ticket", 0.0)
+        st.session_state[f"{key_prefix}_ins"] = defaults.get("ins", 0.0)
+        st.session_state[f"{key_prefix}_ifood"] = defaults.get("ifood", 0.0)
+        st.session_state[f"{key_prefix}_mkt"] = defaults.get("mkt", 0.0)
+        st.session_state[f"{key_prefix}_ent"] = defaults.get("ent", 0.0)
+        st.session_state[f"{key_prefix}_diaria"] = defaults.get("diaria", 0.0)
+
+    # Converte para os formatos esperados (frações/pp/R$)
+    return dict(
+        ticket=t_pct/100.0,
+        ins=i_pp/100.0,
+        ifood=f_pp/100.0,
+        mkt=m_pp/100.0,
+        ent=e_pct/100.0,
+        diaria=d_rs
+    )
+
 with tab_cenarios:
     st.subheader("Comparação de cenários no faturamento atual do slider")
 
-    def ui_cenario(nome, defaults):
-        st.markdown(f"**{nome}**")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            t = st.number_input(f"Ticket Δ% ({nome})", -50.0, 100.0, value=defaults.get("ticket", 0.0), step=1.0) / 100
-            i = st.number_input(f"Insumos Δpp ({nome})", -30.0, 30.0, value=defaults.get("ins", 0.0), step=0.5) / 100
-        with c2:
-            f = st.number_input(f"iFood Δpp ({nome})", -30.0, 30.0, value=defaults.get("ifood", 0.0), step=0.5) / 100
-            m = st.number_input(f"Marketing Δpp ({nome})", -30.0, 30.0, value=defaults.get("mkt", 0.0), step=0.5) / 100
-        with c3:
-            e = st.number_input(f"Entregas/h Δ% ({nome})", -50.0, 100.0, value=defaults.get("ent", 0.0), step=1.0) / 100
-            d = st.number_input(f"Diária MB ΔR$ ({nome})", -50.0, 50.0, value=defaults.get("diaria", 0.0), step=1.0)
-        return dict(ticket=t, ins=i, ifood=f, mkt=m, ent=e, diaria=d)
-
     colA, colB, colC = st.columns(3)
-    with colA: A = ui_cenario("A (Base)", dict(ticket=0.0, ins=0.0, ifood=0.0, mkt=0.0, ent=0.0, diaria=0.0))
-    with colB: B = ui_cenario("B (Otimista)", dict(ticket=5.0, ins=-1.0, ifood=-1.0, mkt=0.0, ent=10.0, diaria=0.0))
-    with colC: C = ui_cenario("C (Pessimista)", dict(ticket=-5.0, ins=1.0, ifood=1.0, mkt=1.0, ent=-10.0, diaria=0.0))
+    with colA:
+        A = ui_cenario("A (Base)", "A", dict(ticket=0.0, ins=0.0, ifood=0.0, mkt=0.0, ent=0.0, diaria=0.0))
+    with colB:
+        B = ui_cenario("B (Otimista)", "B", dict(ticket=5.0, ins=-1.0, ifood=-1.0, mkt=0.0, ent=10.0, diaria=0.0))
+    with colC:
+        C = ui_cenario("C (Pessimista)", "C", dict(ticket=-5.0, ins=1.0, ifood=1.0, mkt=1.0, ent=-10.0, diaria=0.0))
 
     cen_cfgs = [
         ("A (Base)", aplicar_cenario(cfg, ticket_delta_pct=A["ticket"], insumos_delta_pp=A["ins"],
