@@ -154,7 +154,7 @@ def calcular_break_even(cfg: dict, max_iter=40):
 # =============================
 # Sidebar (com sync do faturamento)
 # =============================
-st.title("📊 Simulador Financeiro — Delivery de Petiscos")
+st.title("📊 Simulador Financeiro — Petisco da Serra")
 
 with st.sidebar:
     st.header("⚙️ Configuração")
