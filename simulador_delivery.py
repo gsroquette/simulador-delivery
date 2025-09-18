@@ -270,18 +270,26 @@ be_fat, be_res = calcular_break_even(cfg)
 # E se…?  (slider controla o mesmo faturamento)
 # =============================
 st.subheader("E se…? (simule diferentes faturamentos)")
-max_slider = max(cfg["faturamento"] * 2, be_fat * 2, 10000.0)
-st.slider(
-    "Simular faturamento (R$)",
-    0.0, float(max_slider),
-    float(st.session_state.get("fat_slider", cfg["faturamento"])),
-    step=1000.0, format="%.0f",
-    key="fat_slider",
-    on_change=lambda: st.session_state.update({"fat": st.session_state["fat_slider"]})
-)
-cfg["faturamento"] = float(st.session_state["fat"])  # mantém em sync
+row = st.columns([3, 1])
+with row[0]:
+    st.slider(
+        "Simular faturamento (R$)",
+        0.0, float(max(cfg["faturamento"] * 2, be_fat * 2, 10000.0)),
+        float(st.session_state.get("fat_slider", cfg["faturamento"])),
+        step=1000.0, format="%.0f",
+        key="fat_slider",
+        on_change=lambda: st.session_state.update({"fat": st.session_state["fat_slider"]})
+    )
+with row[1]:
+    st.button(
+        "🎯 Levar slider para o BE",
+        use_container_width=True,
+        help="Ajusta o faturamento simulado para o ponto de equilíbrio.",
+        on_click=lambda: st.session_state.update({"fat": be_fat, "fat_slider": be_fat})
+    )
 
-# Cálculo com o valor atual (após slider)
+cfg["faturamento"] = float(st.session_state["fat"])  # mantém em sync
+# Cálculo com o valor atual (após slider/botão)
 res = calcular_metricas(cfg["faturamento"], cfg)
 
 # =============================
