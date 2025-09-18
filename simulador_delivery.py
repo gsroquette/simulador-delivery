@@ -93,13 +93,22 @@ with st.sidebar:
     st.divider()
     st.caption("Entradas principais")
     cfg["faturamento"] = st.number_input(
-        "Faturamento (R$)", min_value=0.0, step=1000.0, value=float(cfg["faturamento"]),
-        help="Receita bruta estimada do mês."
-    )
-    cfg["ticket_medio"] = st.number_input(
-        "Ticket médio (R$)", min_value=1.0, step=1.0, value=float(cfg["ticket_medio"]),
-        help="Valor médio por pedido; usado para estimar o número de pedidos."
-    )
+    "Faturamento (R$)",
+    min_value=0.0,
+    value=float(cfg["faturamento"]),
+    step=1000.0,
+    format="%.0f",  # força inteiro (sem casas decimais) → +/− funciona certinho
+    help="Receita bruta estimada do mês."
+)
+
+cfg["ticket_medio"] = st.number_input(
+    "Ticket médio (R$)",
+    min_value=0.01,
+    value=float(cfg["ticket_medio"]),
+    step=1.0,
+    format="%.2f",  # força 2 casas decimais → +/− fica estável
+    help="Valor médio por pedido; usado para estimar o número de pedidos."
+)
 
     st.divider()
     st.caption("Custos fixos (mensais)")
